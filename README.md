@@ -29,7 +29,8 @@ Options:
   -?                Show help
 ```
 
-Exactly one of **-l** or **-s** must be supplied.
+At least one of **-l** or **-s** must be supplied; both may be specified together
+(a new file is opened as soon as either limit is reached).
 
 Output files are named `<prefix>NNNN.csv`, where NNNN is the file sequence
 number zero-padded to four digits (e.g. `output0001.csv`, `output0002.csv`, …).

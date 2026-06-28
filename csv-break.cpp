@@ -51,7 +51,7 @@ static void PrintUsage(const char* programName)
            "                Show this help message\n\n");
     printf("Notes:\n");
     printf("  Output files are named <prefix>NNNN.csv, where NNNN is zero-padded to 4 digits.\n");
-    printf("  Exactly one of -l or -s must be specified.\n");
+    printf("  At least one of -l or -s must be specified; both may be used together.\n");
 }
 
 // Parse a size string: plain integer, or integer followed by K / M / G (case-insensitive).
@@ -151,6 +151,9 @@ static BOOL ProcessBlock(
         {
             isHeaderLine = TRUE;
             // Save a copy of the header.
+            // Using malloc here rather than VirtualAlloc because the header is a
+            // small working buffer (typically < 1 KB) and the requirement to use
+            // VirtualAlloc applies to the main file-content buffer in main().
             *ppHeader = (char*)malloc(lineLen + 1);
             if (*ppHeader == NULL)
             {
@@ -339,7 +342,9 @@ int main(int argc, char* argv[])
         CloseHandle(hFile);
         return 0;
     }
-    // On 32-bit builds SIZE_T is 32 bits; guard against truncation.
+    // On 32-bit builds SIZE_T is 32 bits (max ~4 GB), so neededBytes could
+    // exceed SIZE_MAX for very large files.  This check keeps allocBytes safe
+    // to cast to SIZE_T.  On 64-bit builds the condition is always true.
     BOOL   fullFileMode = (memStatus.ullAvailPhys >= neededBytes + RESERVE_BYTES)
                        && (neededBytes <= (UINT64)SIZE_MAX);
 
