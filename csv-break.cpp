@@ -73,7 +73,12 @@ static UINT64 ParseSize(const char* str)
 }
 
 // Read chunk size used in the full-file read loop (64 KB per ReadFile call).
-#define READ_CHUNK_SIZE 65536UL
+#define READ_CHUNK_SIZE         65536UL
+
+// Chunked-mode buffer size limits.
+#define CHUNK_BUFFER_MAX_BYTES  (256ULL * 1024 * 1024)   // 256 MB upper cap
+#define CHUNK_BUFFER_MIN_BYTES  (1ULL   * 1024 * 1024)   // 1 MB lower floor
+
 static HANDLE OpenOutputFile(const char* prefix, int index, char* outPathBuf, SIZE_T bufLen)
 {
     _snprintf_s(outPathBuf, bufLen, _TRUNCATE, "%s%04d.csv", prefix, index);
@@ -327,7 +332,13 @@ int main(int argc, char* argv[])
 
     // We keep at least 64 MB free to avoid starving the OS.
     const UINT64 RESERVE_BYTES = 64ULL * 1024 * 1024;
-    UINT64 neededBytes = (UINT64)fileSize.QuadPart + 1; // +1 so bufCapacity in chunked mode is >= 1
+    UINT64 neededBytes = (UINT64)fileSize.QuadPart;
+    if (neededBytes == 0)
+    {
+        printf(ANSI_YELLOW "Warning: input file is empty. No output files created.\n" ANSI_RESET);
+        CloseHandle(hFile);
+        return 0;
+    }
     // On 32-bit builds SIZE_T is 32 bits; guard against truncation.
     BOOL   fullFileMode = (memStatus.ullAvailPhys >= neededBytes + RESERVE_BYTES)
                        && (neededBytes <= (UINT64)SIZE_MAX);
@@ -341,10 +352,11 @@ int main(int argc, char* argv[])
     }
     else
     {
-        // Use at most half of available memory, capped at 256 MB, minimum 1 MB.
+        // Use at most half of available memory, capped at CHUNK_BUFFER_MAX_BYTES,
+        // with a minimum of CHUNK_BUFFER_MIN_BYTES.
         UINT64 halfAvail = memStatus.ullAvailPhys / 2;
-        if (halfAvail > 256ULL * 1024 * 1024) halfAvail = 256ULL * 1024 * 1024;
-        if (halfAvail < 1ULL  * 1024 * 1024)  halfAvail = 1ULL  * 1024 * 1024;
+        if (halfAvail > CHUNK_BUFFER_MAX_BYTES) halfAvail = CHUNK_BUFFER_MAX_BYTES;
+        if (halfAvail < CHUNK_BUFFER_MIN_BYTES) halfAvail = CHUNK_BUFFER_MIN_BYTES;
         allocBytes = (SIZE_T)halfAvail;
         printf(ANSI_YELLOW "Memory mode: chunked (%llu MB buffer).\n" ANSI_RESET,
                (UINT64)(allocBytes / (1024 * 1024)));
@@ -398,7 +410,9 @@ int main(int argc, char* argv[])
         // Chunked mode: fill buffer, process up to the last complete line,
         // carry the partial line forward to the next iteration.
         char*  buf         = (char*)pBuf;
-        SIZE_T bufCapacity = allocBytes - 1; // reserve 1 byte as a safety margin
+        // VirtualAlloc is asked for allocBytes bytes; we track usable capacity
+        // explicitly so that memmove of a partial line stays within bounds.
+        SIZE_T bufCapacity = allocBytes;
         SIZE_T carry       = 0;              // bytes of an incomplete line at buf[0]
 
         while (ok)
