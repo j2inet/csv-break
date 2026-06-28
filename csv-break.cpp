@@ -72,7 +72,8 @@ static UINT64 ParseSize(const char* str)
     return val;
 }
 
-// Open a new numbered output file.  Returns INVALID_HANDLE_VALUE on failure.
+// Read chunk size used in the full-file read loop (64 KB per ReadFile call).
+#define READ_CHUNK_SIZE 65536UL
 static HANDLE OpenOutputFile(const char* prefix, int index, char* outPathBuf, SIZE_T bufLen)
 {
     _snprintf_s(outPathBuf, bufLen, _TRUNCATE, "%s%04d.csv", prefix, index);
@@ -140,8 +141,10 @@ static BOOL ProcessBlock(
         SIZE_T lineLen = (SIZE_T)(lineEnd - p);
 
         // Handle header line (very first line of the whole file).
+        BOOL isHeaderLine = FALSE;
         if (*ppHeader == NULL && replicateHeader)
         {
+            isHeaderLine = TRUE;
             // Save a copy of the header.
             *ppHeader = (char*)malloc(lineLen + 1);
             if (*ppHeader == NULL)
@@ -204,8 +207,12 @@ static BOOL ProcessBlock(
             printf(ANSI_RED "Error: Failed to write to output file.\n" ANSI_RESET);
             return FALSE;
         }
-        (*pLinesOut)++;
-        *pSizeOut += lineLen;
+        // The header line does not count toward the line/size limits.
+        if (!isHeaderLine)
+        {
+            (*pLinesOut)++;
+            *pSizeOut += lineLen;
+        }
 
         p = lineEnd;
     }
@@ -320,7 +327,7 @@ int main(int argc, char* argv[])
 
     // We keep at least 64 MB free to avoid starving the OS.
     const UINT64 RESERVE_BYTES = 64ULL * 1024 * 1024;
-    UINT64 neededBytes = (UINT64)fileSize.QuadPart + 1; // +1 for safety
+    UINT64 neededBytes = (UINT64)fileSize.QuadPart + 1; // +1 so bufCapacity in chunked mode is >= 1
     // On 32-bit builds SIZE_T is 32 bits; guard against truncation.
     BOOL   fullFileMode = (memStatus.ullAvailPhys >= neededBytes + RESERVE_BYTES)
                        && (neededBytes <= (UINT64)SIZE_MAX);
@@ -371,7 +378,7 @@ int main(int argc, char* argv[])
         UINT64 totalRead = 0;
         while (totalRead < (UINT64)fileSize.QuadPart)
         {
-            DWORD toRead = (DWORD)min((UINT64)65536, (UINT64)fileSize.QuadPart - totalRead);
+            DWORD toRead = (DWORD)min((UINT64)READ_CHUNK_SIZE, (UINT64)fileSize.QuadPart - totalRead);
             DWORD bytesRead = 0;
             if (!ReadFile(hFile, buf + (SIZE_T)totalRead, toRead, &bytesRead, NULL) || bytesRead == 0)
                 break;
@@ -402,9 +409,7 @@ int main(int argc, char* argv[])
                                ? 0x40000000UL
                                : (DWORD)available;
             DWORD bytesRead  = 0;
-            BOOL  readOk     = ReadFile(hFile, buf + carry, toRead, &bytesRead, NULL);
-
-            if (!readOk && GetLastError() != ERROR_HANDLE_EOF)
+            if (!ReadFile(hFile, buf + carry, toRead, &bytesRead, NULL))
             {
                 printf(ANSI_RED "Error: ReadFile failed (error %lu).\n" ANSI_RESET,
                        GetLastError());
